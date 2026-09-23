@@ -47,7 +47,7 @@ import java.util.List;
 
 import static io.ballerina.stdlib.file.compiler.Constants.BALLERINA_ORG;
 import static io.ballerina.stdlib.file.compiler.Constants.FILE;
-import static io.ballerina.stdlib.file.compiler.Constants.FILE_FUNCTIONS;
+import static io.ballerina.stdlib.file.compiler.Constants.FILE_PATH_INJECTION_SINK_FUNCTIONS;
 import static io.ballerina.stdlib.file.compiler.staticcodeanalyzer.FileRule.AVOID_PATH_INJECTION;
 
 /**
@@ -86,7 +86,7 @@ public class FilePathInjectionAnalyzer implements AnalysisTask<SyntaxNodeAnalysi
         String functionName = functionCall.functionName().toString();
 
         boolean isFileOperation = importPrefix.stream().anyMatch(prefix ->
-                FILE_FUNCTIONS.stream().anyMatch(func -> functionName.equals(prefix + ":" + func))
+                FILE_PATH_INJECTION_SINK_FUNCTIONS.stream().anyMatch(func -> functionName.equals(prefix + ":" + func))
         );
 
         if (isFileOperation && !isSafePath(functionCall)) {

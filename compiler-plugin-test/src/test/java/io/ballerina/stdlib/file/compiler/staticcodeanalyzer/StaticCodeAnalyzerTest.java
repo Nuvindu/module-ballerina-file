@@ -111,6 +111,21 @@ public class StaticCodeAnalyzerTest {
         }
     }
 
+    @Test
+    public void testCompliantPathValidationDoesNotTriggerPathInjection() throws IOException {
+        ByteArrayOutputStream console = new ByteArrayOutputStream();
+        PrintStream printStream = new PrintStream(console, true, UTF_8);
+
+        Path targetPackagePath = RESOURCE_PACKAGES_DIRECTORY.resolve("rule2_compliant");
+        TestRunner testRunner = setupTestRunner(targetPackagePath, printStream);
+        testRunner.performScan();
+
+        boolean hasPathInjectionIssue = testRunner.getIssues().stream()
+                .anyMatch(issue -> "ballerina/file:2".equals(issue.rule().id()));
+        Assert.assertFalse(hasPathInjectionIssue,
+                "canonicalizing/validating the path before use should not be flagged as path injection");
+    }
+
     private void testIndividualRule(FileRule rule, ByteArrayOutputStream console, PrintStream printStream)
             throws IOException {
         String targetPackageName = "rule" + rule.getId();

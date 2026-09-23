@@ -54,6 +54,28 @@ public class Constants {
             "createTempDir"
     );
 
+    // Pure path-string utilities that do not themselves touch the filesystem. They are commonly
+    // used to canonicalize/validate a path (e.g. getAbsolutePath + normalizePath) before it is
+    // passed to a filesystem operation, so building their argument via concatenation is not, by
+    // itself, a path injection vulnerability.
+    public static final List<String> FILE_PATH_UTIL_FUNCTIONS = List.of(
+            "getAbsolutePath",
+            "isAbsolutePath",
+            "basename",
+            "parentPath",
+            "normalizePath",
+            "splitPath",
+            "joinPath",
+            "relativePath"
+    );
+
+    // Filesystem operations that actually read, write, or otherwise act on the given path.
+    // These are the sinks the path injection check should apply to.
+    public static final List<String> FILE_PATH_INJECTION_SINK_FUNCTIONS = FILE_FUNCTIONS.stream()
+            .filter(function -> !FILE_PATH_UTIL_FUNCTIONS.contains(function))
+            .distinct()
+            .toList();
+
     public static final List<String> PUBLIC_DIRECTORIES = List.of(
             "\"TMP\"",
             "\"TEMP\"",
