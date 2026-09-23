@@ -29,12 +29,16 @@ import io.ballerina.runtime.api.values.BError;
 import io.ballerina.runtime.api.values.BMap;
 import io.ballerina.runtime.api.values.BObject;
 import io.ballerina.runtime.api.values.BString;
+import io.ballerina.stdlib.file.observability.FileMetricsUtil;
+import io.ballerina.stdlib.file.observability.FileObserverContext;
+import io.ballerina.stdlib.file.observability.FileTracingUtil;
 import io.ballerina.stdlib.file.utils.FileConstants;
 import io.ballerina.stdlib.file.utils.FileUtils;
 import io.ballerina.stdlib.file.utils.ModuleUtils;
 import org.wso2.transport.localfilesystem.server.connector.contract.LocalFileSystemEvent;
 import org.wso2.transport.localfilesystem.server.connector.contract.LocalFileSystemListener;
 
+import java.io.File;
 import java.nio.file.Path;
 import java.util.Map;
 import java.util.Optional;
@@ -52,6 +56,7 @@ public class FSListener implements LocalFileSystemListener {
     private final Runtime runtime;
     private final Path watchRoot;
     private final boolean recursive;
+    private final String watchedPath;
     private final Map<BObject, Map<String, MethodType>> serviceRegistry = new ConcurrentHashMap<>();
     private final Map<String, OwnedActions> actions = new ConcurrentHashMap<>();
 
@@ -59,6 +64,7 @@ public class FSListener implements LocalFileSystemListener {
         this.runtime = runtime;
         this.watchRoot = watchRoot;
         this.recursive = recursive;
+        this.watchedPath = watchRoot.toString();
     }
 
     @Override
@@ -67,17 +73,37 @@ public class FSListener implements LocalFileSystemListener {
     }
 
     private void dispatch(LocalFileSystemEvent fileEvent) {
+        String filePath = fileEvent.getFileName();
+        String eventType = mapEventType(fileEvent.getEvent());
+
+        FileMetricsUtil.reportFileStage(watchedPath, FileMetricsUtil.FILE_STAGE_FOUND,
+                null, null, null);
+
+        FileObserverContext lifecycleCtx = FileTracingUtil.createFileLifecycleContext(
+                watchedPath, filePath);
+
         Object balFileEvent = createBallerinaFileEvent(fileEvent);
         String event = fileEvent.getEvent();
         OwnedActions owned = actions.get(event);
-        Boolean ownerSucceeded = invokeServices(event, balFileEvent, owned);
+        Boolean ownerSucceeded = invokeServices(event, eventType, balFileEvent, owned, lifecycleCtx,
+                filePath);
+
+        if (!serviceRegistry.values().stream()
+                .anyMatch(methods -> methods.containsKey(event))) {
+            FileMetricsUtil.reportFileStage(watchedPath, FileMetricsUtil.FILE_STAGE_FOUND,
+                    FileMetricsUtil.OUTCOME_SKIPPED, FileMetricsUtil.FAILURE_NO_HANDLER_MATCHED, null);
+        }
+
+        FileTracingUtil.finishFileLifecycleSpan(lifecycleCtx);
+
         if (owned != null && ownerSucceeded != null) {
-            runOwnedAction(owned, ownerSucceeded, fileEvent.getFileName());
+            runOwnedAction(owned, ownerSucceeded, filePath);
         }
     }
 
-    /** Invokes every service that handles the event; returns the owner's outcome, or null if it did not run. */
-    private Boolean invokeServices(String event, Object balFileEvent, OwnedActions owned) {
+    private Boolean invokeServices(String event, String eventType, Object balFileEvent,
+                                   OwnedActions owned, FileObserverContext lifecycleCtx,
+                                   String filePath) {
         Boolean ownerSucceeded = null;
         for (Map.Entry<BObject, Map<String, MethodType>> serviceEntry : serviceRegistry.entrySet()) {
             MethodType serviceFunction = serviceEntry.getValue().get(event);
@@ -85,7 +111,9 @@ public class FSListener implements LocalFileSystemListener {
                 continue;
             }
             BObject service = serviceEntry.getKey();
-            boolean succeeded = invokeRemoteFunction(service, serviceFunction.getName(), balFileEvent);
+            String functionName = serviceFunction.getName();
+            boolean succeeded = invokeRemoteFunction(service, functionName, eventType, balFileEvent,
+                    lifecycleCtx, filePath);
             if (owned != null && owned.owner == service) {
                 ownerSucceeded = succeeded;
             }
@@ -101,12 +129,37 @@ public class FSListener implements LocalFileSystemListener {
         }
     }
 
-    private boolean invokeRemoteFunction(BObject service, String functionName, Object balFileEvent) {
+    private boolean invokeRemoteFunction(BObject service, String functionName, String eventType,
+                                         Object balFileEvent, FileObserverContext lifecycleCtx,
+                                         String filePath) {
+        FileMetricsUtil.reportFileStage(watchedPath, FileMetricsUtil.FILE_STAGE_DISPATCHED,
+                null, null, functionName);
+        Map<String, Object> properties = FileTracingUtil.createStrandProperties(
+                watchedPath, eventType, functionName);
+        FileTracingUtil.setParentContext(properties, lifecycleCtx);
+        File file = new File(filePath);
+        long fileSize = file.exists() ? file.length() : -1;
+        long modifiedTime = file.exists() ? file.lastModified() : -1;
+        FileTracingUtil.addFileMetadataToStrandProperties(properties, fileSize, modifiedTime, filePath);
+
         try {
             ObjectType type = (ObjectType) TypeUtils.getReferredType(TypeUtils.getType(service));
             boolean isConcurrentSafe = type.isIsolated() && type.isIsolated(functionName);
-            Object result = runtime.callMethod(service, functionName, new StrandMetadata(isConcurrentSafe, null),
-                    balFileEvent);
+            long startTime = System.nanoTime();
+            Object result = runtime.callMethod(service, functionName,
+                    new StrandMetadata(isConcurrentSafe, properties), balFileEvent);
+            double durationSecs = (System.nanoTime() - startTime) / 1_000_000_000.0;
+
+            String outcome = (result instanceof BError)
+                    ? FileMetricsUtil.OUTCOME_FAILURE : FileMetricsUtil.OUTCOME_SUCCESS;
+            String errorType = (result instanceof BError)
+                    ? ((BError) result).getType().getName() : null;
+
+            FileMetricsUtil.reportFileStage(watchedPath, FileMetricsUtil.FILE_STAGE_HANDLED,
+                    outcome, errorType, functionName);
+            FileMetricsUtil.reportResourceExecutionDuration(watchedPath, functionName,
+                    outcome, durationSecs);
+
             if (result instanceof BError bError) {
                 bError.printStackTrace();
                 return false;
@@ -120,6 +173,15 @@ public class FSListener implements LocalFileSystemListener {
                     + functionName + ": " + e.getMessage()).printStackTrace();
             return false;
         }
+    }
+
+    private String mapEventType(String event) {
+        return switch (event) {
+            case DirectoryListenerConstants.EVENT_CREATE -> FileMetricsUtil.EVENT_TYPE_CREATE;
+            case DirectoryListenerConstants.EVENT_DELETE -> FileMetricsUtil.EVENT_TYPE_DELETE;
+            case DirectoryListenerConstants.EVENT_MODIFY -> FileMetricsUtil.EVENT_TYPE_MODIFY;
+            default -> FileMetricsUtil.NONE;
+        };
     }
 
     private Object createBallerinaFileEvent(LocalFileSystemEvent fileEvent) {
