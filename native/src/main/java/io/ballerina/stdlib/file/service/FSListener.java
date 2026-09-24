@@ -38,7 +38,6 @@ import io.ballerina.stdlib.file.utils.ModuleUtils;
 import org.wso2.transport.localfilesystem.server.connector.contract.LocalFileSystemEvent;
 import org.wso2.transport.localfilesystem.server.connector.contract.LocalFileSystemListener;
 
-import java.io.File;
 import java.nio.file.Path;
 import java.util.Map;
 import java.util.Optional;
@@ -137,15 +136,12 @@ public class FSListener implements LocalFileSystemListener {
         Map<String, Object> properties = FileTracingUtil.createStrandProperties(
                 watchedPath, eventType, functionName);
         FileTracingUtil.setParentContext(properties, lifecycleCtx);
-        File file = new File(filePath);
-        long fileSize = file.exists() ? file.length() : -1;
-        long modifiedTime = file.exists() ? file.lastModified() : -1;
-        FileTracingUtil.addFileMetadataToStrandProperties(properties, fileSize, modifiedTime, filePath);
+        FileTracingUtil.addFileMetadataToStrandProperties(properties, filePath);
 
+        ObjectType type = (ObjectType) TypeUtils.getReferredType(TypeUtils.getType(service));
+        boolean isConcurrentSafe = type.isIsolated() && type.isIsolated(functionName);
+        long startTime = System.nanoTime();
         try {
-            ObjectType type = (ObjectType) TypeUtils.getReferredType(TypeUtils.getType(service));
-            boolean isConcurrentSafe = type.isIsolated() && type.isIsolated(functionName);
-            long startTime = System.nanoTime();
             Object result = runtime.callMethod(service, functionName,
                     new StrandMetadata(isConcurrentSafe, properties), balFileEvent);
             double durationSecs = (System.nanoTime() - startTime) / 1_000_000_000.0;
@@ -166,9 +162,15 @@ public class FSListener implements LocalFileSystemListener {
             }
             return true;
         } catch (BError bError) {
+            double durationSecs = (System.nanoTime() - startTime) / 1_000_000_000.0;
+            FileMetricsUtil.reportHandledFailure(watchedPath, bError.getType().getName(),
+                    functionName, durationSecs);
             bError.printStackTrace();
             return false;
         } catch (RuntimeException e) {
+            double durationSecs = (System.nanoTime() - startTime) / 1_000_000_000.0;
+            FileMetricsUtil.reportHandledFailure(watchedPath, e.getClass().getSimpleName(),
+                    functionName, durationSecs);
             FileUtils.getBallerinaError(FileConstants.FILE_SYSTEM_ERROR, "Error invoking remote function "
                     + functionName + ": " + e.getMessage()).printStackTrace();
             return false;

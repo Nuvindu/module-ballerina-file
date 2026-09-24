@@ -25,6 +25,7 @@ import io.ballerina.runtime.observability.tracer.BSpan;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.File;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -158,16 +159,14 @@ public class FileTracingUtil {
     }
 
     /**
-     * Adds file metadata as span-only properties to strand properties.
-     * These are trace-only to avoid metric cardinality explosion.
+     * Reads file metadata from disk and adds it as trace-only tags to strand properties.
+     * Performs no I/O if strand properties are null (observability disabled).
      *
      * @param strandProperties the strand properties map (may be null)
-     * @param fileSize         file size in bytes, or -1 if unknown
-     * @param modifiedTime     last-modified timestamp in millis, or -1 if unknown
-     * @param filePath         file path for span-only tag
+     * @param filePath         file path to read metadata from and add as a tag
      */
     public static void addFileMetadataToStrandProperties(Map<String, Object> strandProperties,
-                                                          long fileSize, long modifiedTime, String filePath) {
+                                                          String filePath) {
         if (strandProperties == null) {
             return;
         }
@@ -177,14 +176,14 @@ public class FileTracingUtil {
             if (ctx == null) {
                 return;
             }
-            if (fileSize >= 0) {
-                ctx.addProperty(FileObserverContext.TAG_FILE_SIZE, fileSize);
-            }
-            if (modifiedTime >= 0) {
-                ctx.addProperty(FileObserverContext.TAG_FILE_MODIFIED_TIME, modifiedTime);
-            }
             if (filePath != null) {
-                ctx.addProperty(FileObserverContext.TAG_FILE_PATH, filePath);
+                ctx.addTag(FileObserverContext.TAG_FILE_PATH, filePath);
+                File file = new File(filePath);
+                boolean exists = file.exists();
+                if (exists) {
+                    ctx.addTag(FileObserverContext.TAG_FILE_SIZE, String.valueOf(file.length()));
+                    ctx.addTag(FileObserverContext.TAG_FILE_MODIFIED_TIME, String.valueOf(file.lastModified()));
+                }
             }
         } catch (Throwable t) {
             log.debug("Failed to add file metadata to strand properties", t);

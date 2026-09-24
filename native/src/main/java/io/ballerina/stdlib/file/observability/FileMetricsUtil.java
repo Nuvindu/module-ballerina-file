@@ -77,20 +77,23 @@ public class FileMetricsUtil {
 
     private static final MetricRegistry metricRegistry = DefaultMetricRegistry.getInstance();
 
-    private static String instanceUrl;
-    private static boolean instanceUrlResolved;
-
-    /** Returns the hostname of the current instance, resolved lazily on first use, or {@code null} if unavailable. */
+    /** Returns the hostname of the current instance, or {@code null} if unavailable. */
     public static String getInstanceUrl() {
-        if (!instanceUrlResolved) {
+        return InstanceUrlHolder.INSTANCE_URL;
+    }
+
+    private static final class InstanceUrlHolder {
+        static final String INSTANCE_URL;
+
+        static {
+            String url;
             try {
-                instanceUrl = InetAddress.getLocalHost().getHostName();
+                url = InetAddress.getLocalHost().getHostName();
             } catch (Exception e) {
-                instanceUrl = null;
+                url = null;
             }
-            instanceUrlResolved = true;
+            INSTANCE_URL = url;
         }
-        return instanceUrl;
     }
 
     private FileMetricsUtil() {
@@ -154,5 +157,19 @@ public class FileMetricsUtil {
         } catch (Throwable t) {
             log.debug("Failed to report resource execution duration metric", t);
         }
+    }
+
+    /**
+     * Reports a handled-stage failure and its execution duration in a single call.
+     *
+     * @param watchedPath  monitored directory path
+     * @param errorType    error type name
+     * @param functionName handler method name
+     * @param durationSecs duration in seconds
+     */
+    public static void reportHandledFailure(String watchedPath, String errorType,
+                                            String functionName, double durationSecs) {
+        reportFileStage(watchedPath, FILE_STAGE_HANDLED, OUTCOME_FAILURE, errorType, functionName);
+        reportResourceExecutionDuration(watchedPath, functionName, OUTCOME_FAILURE, durationSecs);
     }
 }
