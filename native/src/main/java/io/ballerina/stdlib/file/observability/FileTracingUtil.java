@@ -159,31 +159,31 @@ public class FileTracingUtil {
     }
 
     /**
-     * Reads file metadata from disk and adds it as trace-only tags to strand properties.
-     * Performs no I/O if strand properties are null (observability disabled).
+     * Adds file metadata (size, modified time) directly to the lifecycle parent span.
+     * These are trace-only to avoid metric cardinality explosion — adding them to the
+     * handler's {@link ObserverContext} tags would create a retained metric entry per file.
+     * Performs no I/O if tracing is disabled or the parent span is not available.
      *
      * @param strandProperties the strand properties map (may be null)
-     * @param filePath         file path to read metadata from and add as a tag
+     * @param filePath         file path to read metadata from
      */
     public static void addFileMetadataToStrandProperties(Map<String, Object> strandProperties,
                                                           String filePath) {
-        if (strandProperties == null) {
+        if (strandProperties == null || filePath == null || !ObserveUtils.isTracingEnabled()) {
             return;
         }
         try {
             FileObserverContext ctx = (FileObserverContext) strandProperties.get(
                     ObservabilityConstants.KEY_OBSERVER_CONTEXT);
-            if (ctx == null) {
+            if (ctx == null || ctx.getParent() == null || ctx.getParent().getSpan() == null) {
                 return;
             }
-            if (filePath != null) {
-                ctx.addTag(FileObserverContext.TAG_FILE_PATH, filePath);
-                File file = new File(filePath);
-                boolean exists = file.exists();
-                if (exists) {
-                    ctx.addTag(FileObserverContext.TAG_FILE_SIZE, String.valueOf(file.length()));
-                    ctx.addTag(FileObserverContext.TAG_FILE_MODIFIED_TIME, String.valueOf(file.lastModified()));
-                }
+            BSpan parentSpan = ctx.getParent().getSpan();
+            File file = new File(filePath);
+            if (file.exists()) {
+                parentSpan.addTag(FileObserverContext.TAG_FILE_SIZE, String.valueOf(file.length()));
+                parentSpan.addTag(FileObserverContext.TAG_FILE_MODIFIED_TIME,
+                        String.valueOf(file.lastModified()));
             }
         } catch (Throwable t) {
             log.debug("Failed to add file metadata to strand properties", t);
